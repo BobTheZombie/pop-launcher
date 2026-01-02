@@ -12,6 +12,8 @@ base-dir := if rootdir == '' {
     rootdir / 'usr'
 }
 
+# For root installs, upstream expects plugins under /usr/lib/pop-launcher/...
+# For local installs, use ~/.local/share/pop-launcher/...
 lib-dir := if rootdir == '' {
     base-dir / 'share'
 } else {
@@ -22,8 +24,8 @@ bin-dir := base-dir / 'bin'
 bin-path := bin-dir / ID
 
 launcher-dir := lib-dir / ID
-scripts-dir := launcher-dir / 'scripts/'
-plugin-dir := launcher-dir / 'plugins/'
+scripts-dir := launcher-dir / 'scripts'
+plugin-dir := launcher-dir / 'plugins'
 
 version := '0.0.0'
 
@@ -37,21 +39,19 @@ build-debug *args:
 # Compile with release profile
 build-release *args: (build-debug '--release' args)
 
-# Compile with a vendored tarball
+# Compile with a vendored tarball (requires vendor.tar present)
 build-vendored *args: _vendor-extract (build-release '--frozen --offline' args)
 
 # Check for errors and linter warnings
 check *args:
     cargo clippy --all-features {{args}} -- -W clippy::pedantic
 
-# Runs a check with JSON message format for IDE integration
-check-json: (check '--message-format=json')
+check-json:
+    just check --message-format=json
 
-# Remove Cargo build artifacts
 clean:
     cargo clean
 
-# Also remove .cargo and vendored dependencies
 clean-dist:
     rm -rf .cargo vendor vendor.tar target
 
@@ -64,41 +64,52 @@ install-bin:
 
 # Install pop-launcher plugins
 install-plugins:
-    #!/usr/bin/env sh
-    set -ex
-    for plugin in {{plugins}}; do
-        dest={{plugin-dir}}${plugin}
-        mkdir -p ${dest}
-        install -Dm0644 plugins/src/${plugin}/*.ron ${dest}
-        ln -srf {{bin-path}} {{plugin-dir}}${plugin}/$(echo ${plugin} | sed 's/_/-/')
-    done
+    sh -euc '\
+      set -e; \
+      for plugin in {{plugins}}; do \
+        dest="{{plugin-dir}}/$plugin"; \
+        mkdir -p "$dest"; \
+        # Install all .ron configs for the plugin \
+        install -Dm0644 -t "$dest" "plugins/src/$plugin/"*.ron; \
+        # Symlink executable to plugin entry name (underscores -> dashes) \
+        link_name=$(printf "%s" "$plugin" | sed "s/_/-/g"); \
+        ln -sf "{{bin-path}}" "{{plugin-dir}}/$plugin/$link_name"; \
+      done \
+    '
 
 # Install pop-launcher scripts
 install-scripts:
-    #!/usr/bin/env sh
-    set -ex
-    mkdir -p {{scripts-dir}}
-    for script in {{justfile_directory()}}/scripts/*; do
-        cp -r ${script} {{scripts-dir}}
-    done
+    sh -euc '\
+      set -e; \
+      mkdir -p "{{scripts-dir}}"; \
+      for script in "{{justfile_directory()}}"/scripts/*; do \
+        cp -r "$script" "{{scripts-dir}}/"; \
+      done \
+    '
 
-# Uninstalls everything (requires same arguments as given to install)
 uninstall:
-    rm {{bin-path}}
+    rm -f {{bin-path}}
     rm -rf {{launcher-dir}}
 
-# Vendor Cargo dependencies locally
+# Vendor Cargo dependencies locally (generates vendor.tar)
 vendor:
-    mkdir -p .cargo
-    cargo vendor --sync bin/Cargo.toml \
-        --sync plugins/Cargo.toml \
-        --sync service/Cargo.toml \
-        | head -n -1 > .cargo/config
-    echo 'directory = "vendor"' >> .cargo/config
-    tar pcf vendor.tar vendor
-    rm -rf vendor
+    sh -euc '\
+      set -e; \
+      mkdir -p .cargo; \
+      cargo vendor --sync bin/Cargo.toml \
+                  --sync plugins/Cargo.toml \
+                  --sync service/Cargo.toml \
+        | head -n -1 > .cargo/config; \
+      echo "directory = \"vendor\"" >> .cargo/config; \
+      tar pcf vendor.tar vendor; \
+      rm -rf vendor; \
+    '
 
-# Extracts vendored dependencies if vendor=1
 _vendor-extract:
-    rm -rf vendor
-    tar pxf vendor.tar
+    sh -euc '\
+      set -e; \
+      rm -rf vendor; \
+      test -f vendor.tar || { echo "error: vendor.tar not found. Run: just vendor (outside chroot) or build with just build-release"; exit 2; }; \
+      tar pxf vendor.tar; \
+    '
+
