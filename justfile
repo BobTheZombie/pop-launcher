@@ -1,8 +1,11 @@
 ID := 'pop-launcher'
 plugins := 'calc desktop_entries files find pop_shell pulse recent scripts terminal web cosmic_toplevel'
 
+# Staging root (empty = user-local install)
 rootdir := ''
-# NEW: install prefix, overridable from CLI. Defaults:
+
+# Install prefix (overridable: `just rootdir=... prefix=/usr install`)
+# Defaults:
 # - local install: ~/.local
 # - staged install: /usr
 prefix := if rootdir == '' { env_var('HOME') / '.local' } else { '/usr' }
@@ -11,12 +14,13 @@ debug := '0'
 
 target-dir := if debug == '1' { 'target/debug' } else { 'target/release' }
 
-# CHANGED: base-dir now respects prefix when rootdir is set
+# Convert prefix like "/usr" -> "usr" for safe join under rootdir
+prefix_rel := shell("sh -c 'p=\"{{prefix}}\"; printf \"%s\" \"${p#/}\"'")
+
 base-dir := if rootdir == '' {
     prefix
 } else {
-    # join rootdir + prefix (strip leading / to avoid path reset)
-    rootdir / prefix.trim_start_matches('/')
+    rootdir / prefix_rel
 }
 
 # For root installs, upstream expects plugins under /usr/lib/pop-launcher/...
@@ -53,6 +57,7 @@ build-vendored *args: _vendor-extract (build-release '--frozen --offline' args)
 check *args:
     cargo clippy --all-features {{args}} -- -W clippy::pedantic
 
+# Runs a check with JSON message format for IDE integration
 check-json:
     just check --message-format=json
 
@@ -78,7 +83,9 @@ install-plugins:
       for plugin in {{plugins}}; do \
         dest="{{plugin-dir}}/$plugin"; \
         mkdir -p "$dest"; \
+        # Install all .ron configs for the plugin \
         install -Dm0644 -t "$dest" "plugins/src/$plugin/"*.ron; \
+        # Symlink executable to plugin entry name (underscores -> dashes) \
         link_name=$(printf "%s" "$plugin" | sed "s/_/-/g"); \
         ln -sf "{{bin-path}}" "{{plugin-dir}}/$plugin/$link_name"; \
       done \
